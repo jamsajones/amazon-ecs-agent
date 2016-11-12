@@ -12,7 +12,7 @@
 # permissions and limitations under the License.
 
 
-$ecsRootDir = "C:\ProgramData\Amazon ECS\"
+$ecsRootDir = "C:\ProgramData\Amazon\ECS\"
 
 # LogMsg [-message] <String> [-logLevel <String>]
 ## This function should be used to write a message to the log file so that we have consistent 
