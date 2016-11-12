@@ -30,7 +30,7 @@ const (
 // DefaultConfig returns the default configuration for Windows
 func DefaultConfig() Config {
 	programData := utils.DefaultIfBlank(os.Getenv("ProgramData"), `C:\ProgramData`)
-	ecsRoot := filepath.Join(programData, "Amazon ECS")
+	ecsRoot := filepath.Join(programData, "Amazon", "ECS")
 	return Config{
 		DockerEndpoint:   "npipe:////./pipe/docker_engine",
 		ReservedPorts:    []uint16{DockerReservedPort, DockerReservedSSLPort, AgentIntrospectionPort, AgentCredentialsPort},
