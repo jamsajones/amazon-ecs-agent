@@ -17,35 +17,22 @@ import (
 	"strings"
 )
 
-type LicenseProvider interface {
-	GetText() (string, error)
-}
-
-type licenseProvider struct{}
-
 const (
 	licenseFile = "LICENSE"
 	noticeFile  = "NOTICE"
 )
 
-var readFile = ioutil.ReadFile
+var separator = "\n" + strings.Repeat("=", 80) + "\n"
+var licenseText, licenseErr = ioutil.ReadFile(licenseFile)
+var noticeText, noticeErr = ioutil.ReadFile(noticeFile)
 
-func NewLicenseProvider() LicenseProvider {
-	return &licenseProvider{}
-}
-
-func (l *licenseProvider) GetText() (string, error) {
-	licenseText, err := readFile(licenseFile)
-	if err != nil {
-		return "", err
+// This function creturns the concatinated text from the LICENSE and NOTICE files.
+// It returns an if one of them cannot be read from the same directory as the executable.
+func GetText() (string, error) {
+	err := licenseErr
+	if licenseErr == nil {
+		err = noticeErr
 	}
-
-	noticeText, err := readFile(noticeFile)
-	if err != nil {
-		return "", err
-	}
-
-	separator := "\n" + strings.Repeat("=", 80) + "\n"
-
-	return string(licenseText) + separator + string(noticeText), nil
+	text := string(licenseText) + separator + string(noticeText)
+	return text, err
 }

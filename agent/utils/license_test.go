@@ -15,17 +15,23 @@ package utils
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
 
-func TestGetTextSuccess(t *testing.T) {
-	readFile = func(name string) ([]byte, error) {
-		return []byte(name), nil
-	}
+func TestMain(m *testing.M) {
+	licenseErr = nil
+	noticeErr = nil
 
-	provider := licenseProvider{}
-	text, err := provider.GetText()
+	code := m.Run()
+	os.Exit(code)
+}
+func TestGetTextSuccess(t *testing.T) {
+	licenseText = []byte("LICENSE")
+	noticeText = []byte("NOTICE")
+
+	text, err := GetText()
 
 	if err != nil {
 		t.Error("Did not expect error", err)
@@ -38,12 +44,8 @@ func TestGetTextSuccess(t *testing.T) {
 }
 
 func TestGetTextErrorLicense(t *testing.T) {
-	readFile = func(name string) ([]byte, error) {
-		return nil, errors.New("test error")
-	}
-
-	provider := licenseProvider{}
-	_, err := provider.GetText()
+	licenseErr = errors.New("test error")
+	_, err := GetText()
 
 	if err == nil {
 		t.Error("Expected error but was nil")
@@ -51,15 +53,9 @@ func TestGetTextErrorLicense(t *testing.T) {
 }
 
 func TestGetTextErrorNotice(t *testing.T) {
-	readFile = func(name string) ([]byte, error) {
-		if name == "LICENSE" {
-			return nil, nil
-		}
-		return nil, errors.New("test error")
-	}
+	noticeErr = errors.New("test error")
 
-	provider := licenseProvider{}
-	_, err := provider.GetText()
+	_, err := GetText()
 
 	if err == nil {
 		t.Error("Expected error but was nil")
