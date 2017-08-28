@@ -14,6 +14,7 @@ package handler
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/aws/amazon-ecs-agent/agent/acs/model/ecsacs"
 	"github.com/aws/amazon-ecs-agent/agent/api"
@@ -169,6 +170,64 @@ func (payloadHandler *payloadRequestHandler) handleSingleMessage(payload *ecsacs
 	return nil
 }
 
+type taskProcessErrorCode int
+
+const (
+	nilTask taskProcessErrorCode = 1 << iota
+	unrecognizedTask
+	taskCredentialsErr
+)
+
+type processedTaskStruct struct {
+	valid bool
+	err   taskProcessErrorCode
+	task  *api.Task
+}
+
+func (payloadHandler *payloadRequestHandler) processTask(task *ecsacs.Task, payload *ecsacs.PayloadMessage, apiTasksChan chan processedTaskStruct, tasksWG *sync.WaitGroup) {
+	defer tasksWG.Done()
+	if task == nil {
+		seelog.Criticalf("Recieved nil task for messageId: %s", payload.MessageId)
+		apiTasksChan <- processedTaskStruct{
+			valid: false,
+			err:   nilTask,
+		}
+		return
+	}
+	apiTask, err := api.TaskFromACS(task, payload)
+	if err != nil {
+		payloadHandler.handleUnrecognizedTask(task, err, payload)
+		apiTasksChan <- processedTaskStruct{
+			valid: false,
+			err:   unrecognizedTask,
+		}
+		return
+	}
+	if task.RoleCredentials != nil {
+		// The payload from ACS for the task has credentials for the
+		// task. Add those to the credentials manager and set the
+		// credentials id for the task as well
+		taskCredentials := credentials.TaskIAMRoleCredentials{
+			ARN:                aws.StringValue(task.Arn),
+			IAMRoleCredentials: credentials.IAMRoleCredentialsFromACS(task.RoleCredentials),
+		}
+		err = payloadHandler.credentialsManager.SetTaskCredentials(taskCredentials)
+		if err != nil {
+			payloadHandler.handleUnrecognizedTask(task, err, payload)
+			apiTasksChan <- processedTaskStruct{
+				valid: false,
+				err:   taskCredentialsErr,
+			}
+			return
+		}
+		apiTask.SetCredentialsID(taskCredentials.IAMRoleCredentials.CredentialsID)
+	}
+	apiTasksChan <- processedTaskStruct{
+		valid: true,
+		task:  apiTask,
+	}
+}
+
 // addPayloadTasks does validation on each task and, for all valid ones, adds
 // it to the task engine. It returns a bool indicating if it could add every
 // task to the taskEngine and a slice of credential ack requests
@@ -177,36 +236,27 @@ func (payloadHandler *payloadRequestHandler) addPayloadTasks(payload *ecsacs.Pay
 	allTasksOK := true
 
 	validTasks := make([]*api.Task, 0, len(payload.Tasks))
+	apiTasksChan := make(chan processedTaskStruct, len(payload.Tasks))
+	tasksWG := sync.WaitGroup{}
+
+	fmt.Println(len(payload.Tasks))
+
+	tasksWG.Add(len(payload.Tasks))
 	for _, task := range payload.Tasks {
-		if task == nil {
-			seelog.Criticalf("Recieved nil task for messageId: %s", *payload.MessageId)
-			allTasksOK = false
-			continue
-		}
-		apiTask, err := api.TaskFromACS(task, payload)
-		if err != nil {
-			payloadHandler.handleUnrecognizedTask(task, err, payload)
-			allTasksOK = false
-			continue
-		}
-		if task.RoleCredentials != nil {
-			// The payload from ACS for the task has credentials for the
-			// task. Add those to the credentials manager and set the
-			// credentials id for the task as well
-			taskCredentials := credentials.TaskIAMRoleCredentials{
-				ARN:                aws.StringValue(task.Arn),
-				IAMRoleCredentials: credentials.IAMRoleCredentialsFromACS(task.RoleCredentials),
-			}
-			err = payloadHandler.credentialsManager.SetTaskCredentials(taskCredentials)
-			if err != nil {
-				payloadHandler.handleUnrecognizedTask(task, err, payload)
-				allTasksOK = false
-				continue
-			}
-			apiTask.SetCredentialsID(taskCredentials.IAMRoleCredentials.CredentialsID)
-		}
-		validTasks = append(validTasks, apiTask)
+		go payloadHandler.processTask(task, payload, apiTasksChan, &tasksWG)
 	}
+
+	tasksWG.Wait()
+	close(apiTasksChan)
+
+	for processed := range apiTasksChan {
+		if processed.valid {
+			validTasks = append(validTasks, processed.task)
+		}
+		allTasksOK = allTasksOK && processed.valid
+		fmt.Println(allTasksOK)
+	}
+
 	// Add 'stop' transitions first to allow seqnum ordering to work out
 	// Because a 'start' sequence number should only be proceeded if all 'stop's
 	// of the same sequence number have completed, the 'start' events need to be
@@ -241,13 +291,13 @@ func (payloadHandler *payloadRequestHandler) addTasks(payload *ecsacs.PayloadMes
 
 		// Generate an ack request for the credentials in the task, if the
 		// task is associated with an IAM Role
-		taskCredentialsId := task.GetCredentialsID()
-		if taskCredentialsId == "" {
+		taskCredentialsID := task.GetCredentialsID()
+		if taskCredentialsID == "" {
 			// CredentialsId not set for task, no need to ack.
 			continue
 		}
 
-		creds, ok := payloadHandler.credentialsManager.GetTaskCredentials(taskCredentialsId)
+		creds, ok := payloadHandler.credentialsManager.GetTaskCredentials(taskCredentialsID)
 		if !ok {
 			seelog.Errorf("Credentials could not be retrieved for task: %s", task.Arn)
 			allTasksOK = false
